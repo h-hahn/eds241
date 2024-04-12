@@ -1,0 +1,490 @@
+---
+title: "EDS241: FINAL"
+author: "Hope Hahn"
+date: '`r format(Sys.time(), "%m/%d/%Y")`'
+output: 
+  pdf_document:
+    toc: false
+    number_sections: yes
+    fig_crop: false
+header-includes:
+  \setlength{\parindent}{1em}
+  \usepackage{float}
+  \renewcommand{\thesubsection}{Question (\alph{subsection})}
+--- 
+
+Make sure to read through the setup in markdown. Remember to write out interpretations and report your results in writing/table/plot forms.
+
+``` {r setup, echo = FALSE, message = FALSE, warning = FALSE}
+#Clean Environment
+rm(list=ls())
+
+# set default chunk options
+knitr::opts_chunk$set(fig.width = 4, fig.height = 3, 
+                      echo = TRUE, message = FALSE, warning = FALSE,
+                      tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+
+# load packages
+packages=c(
+  # Necessary for Assignment 2
+  "Match","plm", "tidyverse", "MatchIt", "RItools", "Hmisc", "lmtest", "estimatr",
+  
+  # You decide what works for you, these are the packages I use to display results 
+  # they may not be the ones you use.
+  "gridExtra", "stargazer", "kableExtra", 
+  "purrr", "knitr", "broom",
+  
+  # Some Potentially useful packages from earlier examples
+  "stargazer", "here","stringr", "janitor", 
+  "cowplot", "ggplot2", "tinytex", "datasets", "tibble") # Used for Mock assignment
+
+for (i in packages) {
+  if (require(i,character.only=TRUE)==FALSE) {
+    install.packages(i,repos='http://cran.us.r-project.org')
+  }
+  else {
+    require(i,character.only=TRUE)
+  }
+}
+
+# Disable scientific notation if you want
+options(scipen=999)
+```
+
+# Part 1: RCTs, treatment ignorability (selection on observables), propensity scores _(15 points total)_
+
+**Setup**
+
+This exercise is inspired by Costello et al. 2008 article in science “Can Catch Shares Prevent Fisheries Collapse”, which we also discussed in class (lecture 5). “Inspired” means that the data final_fisheries_data.csv are synthetically generated to simplify things for our purposes. It contains the variables on 11,135 fisheries (only cross sectional, no time observations): These fisheries were either regulated by an Individual Transferable Quota (ITQ) for all years between 1990 and 2012 or in none of those years. Variables in the dataset include:
+
+**The outcome and treatment variables are:**
+
+\indent COLL_SHARE = share of years a fishery is collapsed between 1990 and 2012 (collapse defined as harvest being more than 10% below maximum recorded harvest).
+
+\indent ITQ = dummy variable indicating ‘treatment’ with an ITQ (equal to 1 if the fishery has been regulated by an ITQ and 0 otherwise).
+
+**The control variables are:**
+
+\indent MET1, MET2, ….MET6 = Dummy variables indicating to which Marine Ecosystem Type (MET) the fishery belongs to (coral reefs, kelp forests, seagrass meadows, open ocean, deep sea, mangrove forests). This type does not change over the relevant time period and does not depend on human influence.
+
+\indent IND_SR = Index of species richness in 1980 with values between 0 and 100 indicating the biodiversity with respect to species in the fishery. Bounds of 0 and 100 are the lowest and highest observed values of species diversity across all fisheries in 1980, respectively.
+
+\indent COMM_VAL = Commercial value of fisheries in 1980 in million US-$
+
+The basic question of interest is “What is the average treatment effect of implementing an ITQ in the time period from 1990 to 2012 on the share of years with a collapse. It is likely that the probability a fishery is selected for an ITQ depends on the pre-treatment characteristics given. It is also quite likely that the pre-treatment characteristics have an effect on the share of collapse for each fishery, i.e. our outcome variable of interest.
+
+### Setup Code
+
+**To prepare the data for the rest of the analysis, I combined all MET categories into a single column. This was mostly to be able to plot back to back in one plot.**
+
+```{r , include=TRUE}
+rm(list=ls()) # clean environment
+
+## Load Data
+fisheries_data <- read_csv(here::here("final", "data", "final_fisheries_data.csv"))
+
+# this data has combined MET column
+fisheries_data_new <- fisheries_data %>% 
+  mutate(MET1 = ifelse(MET1 == 1, "MET1", NA), # these rows turn values of 1 into the category of MET
+         MET2 = ifelse(MET2 == 1, "MET2", NA),
+         MET3 = ifelse(MET3 == 1, "MET3", NA),
+         MET4 = ifelse(MET4 == 1, "MET4", NA),
+         MET5 = ifelse(MET5 == 1, "MET5", NA),
+         MET6 = ifelse(MET6 == 1, "MET6", NA)
+  ) %>%
+  mutate(MET = coalesce(MET1, MET2, MET3, MET4, MET5, MET6)) %>% # combine all METS into a single variable indicating what MET category
+  select(MET, IND_SR, COMM_VAL, ITQ, COLL_SHARE) # select for all relevent variables (remove all the MET1-6 but keep total MET column)
+```
+
+## Pretreatment Ecosystem Characteristic Comparison, Visual _(3 pts)_
+(a) Compare the distributions of pre-treatment ecosystem characteristics (i.e. MET1, MET2, ,,, MET6) between the treated and the control groups by drawing back to back histograms [2 pts]. Write one sentence discussing the (dis)similarity between the two groups [1pt].
+
+***Back to back plot showing distribution of all marine ecosystem types accross treatment and control groups***
+
+```{r fig.height=4, fig.width=6}
+# bar data
+bar_data <- fisheries_data_new %>% 
+  mutate(count = 1)
+
+# make control group negative
+bar_data$count[bar_data$ITQ == '0'] <- -(bar_data$count[bar_data$ITQ == '0'])
+
+
+# attempting to put all variables in one graph
+ggplot(bar_data, aes(x = MET, y = count, fill = ITQ)) + 
+  geom_col(show.legend = FALSE) + # remove legend
+  facet_wrap(~ ITQ, scales = "free_x") + # facet by treatment group
+  coord_flip() + # flip coordinates
+  scale_y_continuous(
+    expand = c(0, 0), # edit y scale
+    labels = function(x) signif(abs(x), 3)) + # make the counts all positive
+  labs(title = "Distribution of MET between control and treatment groups", # update title/subtitle
+       subtitle = "Control (0) is on the left, and treatment (1) is on the right") +
+  theme_minimal() + # make theme lighter
+  theme(panel.spacing.x = unit(0, "mm")) # make plots flush with each other
+```
+
+***Back to back plots showing distribution of marine ecosystem type distribution on individual plots***
+
+```{r , include=TRUE}
+## Histograms comparing covariates
+# met1
+histbackback(split(fisheries_data$MET1, fisheries_data$ITQ), main= 
+               "MET1",	xlab=c("Control", "Treatment"))
+
+# met2
+histbackback(split(fisheries_data$MET2, fisheries_data$ITQ), main= 
+               "MET2",	xlab=c("Control", "Treatment"))
+# met3
+histbackback(split(fisheries_data$MET3, fisheries_data$ITQ), main= 
+               "MET3",	xlab=c("Control", "Treatment"))
+
+# met4
+histbackback(split(fisheries_data$MET4, fisheries_data$ITQ), main= 
+               "MET4",	xlab=c("Control", "Treatment"))
+
+# met5
+histbackback(split(fisheries_data$MET5, fisheries_data$ITQ), main= 
+               "MET5",	xlab=c("Control", "Treatment"))
+
+# met6
+histbackback(split(fisheries_data$MET6, fisheries_data$ITQ), main= 
+               "MET6", xlab=c("Control", "Treatment"))
+```
+
+* **For each MET variable (1-6) the histograms show that each marine ecosystem type are relatively equally divided between the groups regulated by an ITQ (treatment) and unregulated (control). However, when looking at the first graph containing all MET, it appears that MET4-6 are less equally divided (have more imbalance) among treatment and control groups. Without significance tests, it is difficult to determine whether these differences are significant between the two groups, and we are not able to definitively know whether there is a significant covariate imbalance among the marine ecosystem types; we can only make assumptions visually.** 
+
+## Pretreatment Ecosystem Characteristic Comparison, Mean differences _3 pts)_
+(b) Do a test on mean differences between the treated and control groups for the species richness index (IND_SR) and commercial value (COMM_VAL) variables. Interpret the results (estimated difference and significance) [2 pts] and make a conclusion regarding the similarity between the groups [1pt]. 
+
+```{r, include = TRUE}
+# split treat and control to diff datasets
+fisheries_treat <- fisheries_data_new %>% 
+  filter(ITQ == 1)
+fisheries_control <- fisheries_data_new %>% 
+  filter(ITQ == 0)
+
+# find mean difference between two groups
+difference_IND_SR <- round((mean(fisheries_treat$IND_SR) - mean(fisheries_control$IND_SR)), 2)
+difference_COMM_VAL <- round((mean(fisheries_treat$COMM_VAL) - mean(fisheries_control$COMM_VAL)), 2)
+
+# add mean differences into little data frame
+difference_df <- data.frame(Variable = c("IND_SR", "COMM_VAL"),
+                            mean_difference = c(difference_IND_SR, difference_COMM_VAL))
+
+# t-tests of continuous variables
+# select continuous variables
+continuous_vars <- fisheries_data %>% 
+  select(IND_SR, COMM_VAL, ITQ)
+
+# initialize empty data frame
+t_test_results <- data.frame()
+
+# select the names of continuous variables
+continuous_names <- names(continuous_vars)[1:2]
+
+# for loop for t-test
+for (var in continuous_names) {
+  
+  formula <- as.formula(paste(var, "~ ITQ"))
+  
+  # t-test
+  t_test_result <- t.test(formula, data = continuous_vars)
+  
+  # store tidy results of t-test in data frame
+  t_test_result_tidy <- broom::tidy(t_test_result)
+  t_test_result_tidy$Variable <- var
+  t_test_results <- rbind(t_test_results, t_test_result_tidy)
+  
+}
+
+# clean up t test results and add mean difference 
+t_test_results <- t_test_results %>% 
+  select(Variable, estimate1, estimate2, p.value) %>% 
+  left_join(difference_df)
+
+# create table
+results_table <- kable(t_test_results, format = "latex",
+                       col.names = c("Variable",
+                                    "Mean No Treatment",
+                                    "Mean Treatment", 
+                                    "P-Value",
+                                    "Mean Difference"),
+                       caption = "T-Test Results Summary") %>% 
+  kable_styling(font_size = 7, latex_options = "hold_position")
+
+# display results table
+results_table
+```
+
+* **The mean difference in species richness index between the treated (regulated by ITQ) and untreated groups is `r difference_IND_SR`, and the mean difference in commercial value between the two groups is `r difference_COMM_VAL`. This means that on average, the treated group has a `r abs(difference_IND_SR)` lower species richness index than the untreated group. Also, on average, the treated group has a `r abs(difference_COMM_VAL)` lower commercial value than the untreated group. The t-test results show that these differences are statistically significant (using a significance level of alpha = 0.05). For both covariates, the p-value is equal to approximately 0. These results provide evidence that there are differences in pre-treatment charactaristics between the treated and untreated groups, and it is possible that these covariates may be influencing the treatment effects.**
+
+```{r}
+## Covariate Imbalance pre matching: 
+matching_balance <- xBalance(ITQ ~ MET + IND_SR + COMM_VAL,	
+                             data = fisheries_data_new,
+                             report=c("std.diffs","chisquare.test", "p.values"))
+
+# Balance Table 
+balance_table <- kable(matching_balance, format = "latex",
+                       caption = "Covariate Imbalance before matching") %>% 
+  kable_styling(font_size = 7, latex_options = "hold_position")
+
+# Displaying the table
+balance_table
+```
+
+* **Additionally, based on the covariate imbalance table, the chi-square value is very high, so we would reject the assumption that pre-treatment characteristics are unrelated to being chosen into a certain treatment group.**
+
+## Treatment Ignorability _(1 pt)_
+(c) Based on your results from (a) and (b), do you see a problem with just comparing the outcome variable means between treated and untreated fisheries? 
+
+* **There is a problem comparing the just the outcome variable between the treated and untreated fisheries. This is because our tests show that there is an imbalance between pre-treatment characteristics, and treatment selection is not completely random. If the selection of treatment was truly random, there would be no statistical difference between the distributions of these covariates. This means that treatment may not be the only variable influencing the outcome variable, and these covariates may act as confounding variables that influence the outcome variable as well. We cannot assume that *only* the treatment variable is influencing treatment effects.**
+
+## Propensity Scores _(2 pts)_
+(d) Estimate the propensity scores (probability of being treated) using a logit model, assume that all covariates are relevant and should be included in the estimation [0.5 pt]. Draw separate histograms (back to back) of the propensity scores for the treated and the untreated group [0.5 pt]. Comment on the overlap, do you have any concerns? Why/why not? [1]
+
+```{r , include=TRUE}
+## Propensity Score Estimates
+## Propensity Scores
+ps	<- glm(ITQ ~ MET + IND_SR + COMM_VAL,
+          data	= fisheries_data_new,	family	= binomial())
+
+#use gtsummary to make table
+library(gtsummary)
+#print the table in a nice format  
+ps %>%
+  tbl_regression() 
+```
+
+```{r}
+## PS Histogram
+fisheries_data_new$psvalue <- predict(ps, type = "response")
+
+histbackback(split(fisheries_data_new$psvalue, fisheries_data_new$ITQ),	
+             main= "Propensity score", 
+             xlab = c("Control", "Treatment"),
+             ylab = "Propensity Score")
+
+```
+
+* **The propensity scores show the probability of individuals with certain characteristics to be selected for treatment. The overlap of propensity scores shows if the control group act as good counterfactuals for the treatment group by showing whether the two treatment groups (treatment/control groups) have the similar propensity scores. Looking at this histogram, it appears that while there is some overlap in propensity scores within the two treatment groups, the distribution of propensity scores are still different between the two groups. There are more treated individuals at higher propensity scores, but there very few control counterfactuals to choose from at these propensity scores. This means that it will be difficult to find good counterfactuals for most of these treated individuals. Additionally, there are not many treated individuals with lower propensity scores, but there are many more control individuals at these values.**
+
+## ATT with Nearest Neighbor Matching _(3 pts: 2 pt estimate, 1 pt interpretation)_
+(e) Use the propensity scores from (c) to estimate the Average Treatment Effect on the Treated (ATT) with a nearest neighbor matching estimator. Interpret the result (just the size of the estimate)
+
+```{r , include=TRUE}
+## Nearest Neighbor Matching
+m.nn <- matchit(ITQ ~ MET + IND_SR + COMM_VAL,
+                data	= fisheries_data_new,	
+                method= "nearest",	
+                ratio	= 1)
+match.data = match.data(m.nn)
+
+## Covariate Imbalance post matching: 
+matching_balance <- xBalance(ITQ ~ MET + IND_SR + COMM_VAL,	
+                             data = match.data,
+                             report=c("std.diffs","chisquare.test", "p.values"))
+
+# Balance Table 
+matching_balance_table <- kable(matching_balance, format = "latex",
+                                caption = "Covariate Imbalance after matching") %>% 
+  kable_styling(font_size = 7, latex_options = "hold_position")
+
+# Displaying the table
+matching_balance_table
+
+## Histogram of PS after matching
+histbackback(split(match.data$psvalue,	match.data$ITQ),	
+             main = "Propensity score after matching", 
+             xlab = c("Control",	"Treatment"),
+             ylab = "Propensity score")
+```
+
+* **Based on the propensity scores after matching and the covariate imbalance table after matching, it actually appears that there is a higher imbalance after nearest-neighbor matching. However, for the purposes of this assignment I will leave the matching method as nearest-neighbor. For real world applications, I assume that finding a different method of matching would work better to find better counterfactuals for the treatment group. The results in the rest of this section will likely be somewhat inaccurate due to the lack of good counterfactuals.**
+
+```{r}
+# calculate ATT
+diff_data <- match.data %>% 
+  group_by(subclass) %>% 
+  summarise(diff = mean(COLL_SHARE[ITQ==1])- mean(COLL_SHARE[ITQ==0]), .groups = "drop")
+
+ATT <- mean(diff_data$diff, na.rm = TRUE)
+att_match_table <- kable(ATT, format = "latex", caption = "ATT after matching") %>% kable_styling(font_size = 7, latex_options = "hold_position")
+
+att_match_table
+```
+
+* **The average treatment effect after matching is `r ATT`. This means that the share of years a fishery is collapsed between 1990 and 2012 averages `r abs(ATT)` less when treated (regulated with an ITQ) than when not treated (not regulated with ITQ).**
+
+## ATE with WLS _(3 pts: 1 pt estimate, 1 pt interpretation)_
+(f) Estimate the Average Treatment Effect (ATE) using the weighted least squares on the full sample. Interpret the estimated size and conclude if it is significantly different from zero from a statistical perspective.
+
+```{r , include=TRUE}
+## WLS Matching
+# prep
+PS <- fisheries_data_new$psvalue
+Y <- fisheries_data_new$COLL_SHARE
+D <- fisheries_data_new$ITQ
+
+# calculate weight
+fisheries_data_new$wgt = (D/PS + (1 - D)/(1 - PS))
+
+# linear model to understand ATE with WLS
+reg_wls_c <- lm(COLL_SHARE ~ ITQ + MET + IND_SR + COMM_VAL, data = fisheries_data_new, weights = wgt)
+#summary(reg_wls_c)
+
+# present results
+wls_table <- kable(summary(reg_wls_c)$coefficients, format = "latex", caption = "ATE with WLS matching") %>%
+  kable_styling(font_size = 7, latex_options = "hold_position")
+wls_table
+```
+
+* **The ATE using WLS is -0.0766783. This estimate tells us that the share of years a fishery is collapsed between 1990 and 2012 averages 0.0766783 less among the fisheries regulated with an ITQ than those that are not. The p-value is approximately zero, so using a significance level of alpha = 0.05, the average treatment effect is significantly different than 0, meaning that the effect of being regulated with an ITQ is statistically significant.**
+
+# Part 2 Difference in Difference Estimation _(10 points total + 3pts extra credit)_
+
+\indent Here we return for a final time to the dataset from Gertler, Martinez, and Rubio-Codina (2012) and use a different way of estimating the effect of the Mexican conditional cash transfer on the value of animal holdings of recipients. We’ll use the panel data from assignment 2, where you have both the pre-program and post-program observations. See Template for dataset preparation instructions.
+
+\indent **Data Preparation**
+
+\indent *Note: You will need to install the packages plm and dplyr (included in template preamble). Again, you can find a description of the variables at the bottom of PDF and HERE.
+
+Prepare Data: Load the new data (progresa_pre_1997.csv) and the follow-up data (progresa_post_1999.csv) into R. Note that we created a time denoting variable (with the same name, 'year') in BOTH datasets. Again, you will create a panel dataset by appending the data (i.e. binding the dataset row-wise together creating a single dataset). We want to examine the same outcome variable as before, value of family animal holdings (vani). You will use the full dataset for each estimate. NOTE: you should not change any NAs from the TREATED column in your analysis, as we expect that spillover was likely in this program. NAs will be excluded from your calculations/estimations.
+
+```{r , include=TRUE, echo=FALSE}
+rm(list=ls()) # clean environment
+
+## Load/Prep Data
+# Load 1997 and 1999 Progresa datasets
+
+progresa97 <- read_csv(here::here("final", "data", "progresa_pre_1997.csv"))
+progresa99 <- read_csv(here::here("final", "data", "progresa_post_1999.csv"))
+
+### Append post to pre dataset 
+progresa_full <- rbind(progresa97, progresa99) # same as original
+
+progresa_full <- progresa_full %>%
+  group_by(hhid) %>% filter(n() == 2) %>%
+  ungroup()
+
+# This removes all families lost to attrition,
+# in other words. Families who were treated/controls in the program, but did not get measured
+# in the second year. This can happen for many reasons with observational data, you often
+# lose participants as studies go on for longer periods of time.
+
+rm(progresa_pre_1997, progresa_post_1999) # clean unused data
+```
+
+## DiD Estimator, ATE _(5 pts: 3 pts estimate, 2 pts interpretation)_
+
+(a) Calculate the DiD estimator of the treatment effect (ATE) of the program on the value of animal holdings (vani)  “manually” i.e. based on group mean values without running a regression. Report and interpret the result (Note: no significance test or standard errors is possible, so you do not need to report these values).
+
+```{r, include=TRUE}
+## Estimate ATE with DiD estimator manually. 
+# You will need to calculate various means to get this estimate
+
+# separate data to make means easier ----
+# treated after and before ----
+# treated 1999 
+YT_after_data <- progresa_full %>% 
+  filter(treatment == 1, year == 1999) 
+# treated 1997
+YT_before_data <- progresa_full %>% 
+  filter(treatment == 1, year == 1997) 
+
+# untreated after and before ----
+# untreated 1999
+YC_after_data <- progresa_full %>% 
+  filter(treatment == 0, year == 1999) 
+# untreated 1997
+YC_before_data <- progresa_full %>% 
+  filter(treatment == 0, year == 1997) 
+
+# calculate means ----
+# treatment means
+YT_after_mean <- mean(YT_after_data$vani) 
+YT_before_mean <- mean(YT_before_data$vani)
+delta_YT <- YT_after_mean - YT_before_mean
+
+# control means 
+YC_after_mean <- mean(YC_after_data$vani)
+YC_before_mean <- mean(YC_before_data$vani)
+delta_YC <- YC_after_mean - YC_before_mean
+
+## Compute the Difference-in-Differences ----
+# treatment - control
+did <- round((delta_YT) - (delta_YC),2)
+did
+```
+
+* **When calculated manually, the difference in difference estimator on the ATE of value of animal holdings is $`r did`0. This means that after the treatment time period, households that received treatment had an average of $`r did`0 higher value of animal holdings than households that did not receive treatment. This estimate allows us to understand the effect of treatment, taking into account that there may be time-invariant unobserved characteristics. DID helps us to interpret treatment effect disregarding other time-invariant characteristics that also change the outcome variable over time.**
+
+* **When looking at the mean value of animal holdings over time for each group separately, it appears that there is a decrease in value after the treatment time period for both groups. The control group had a decrease in value of animal holdings by an average of $`r abs(round(delta_YC, 2))` over time, while the treatment group had an average decrease in value of animal holdings by $`r abs(round(delta_YT, 2))`. The DID shows us that although both groups decreased in value of animal holdings over time, the treatment may have allowed less of a decrease for treated households, as their post-treatment value is, on average, still $`r did`0 higher than the control group.**
+
+## Difference in Difference using OLS _(5 pts)_
+(b) Now set up an OLS-regression using group mean values to estimate the same ATE. Interpret the estimated treatment effect [3 pts]. Also interpret the coefficients on the time dummy and the group dummy variable (see interpretation done in class in lecture 9) [2 pts]. 
+
+\indent **Hints:** You will need to create a new dataframe with a variety of dummy variables to do this. The R example provided with the DiD module (and/or the excel file) should help.
+
+```{r, include=TRUE}
+## Create a new data frame for OLS regression
+progresa_ols <- progresa_full %>% 
+  mutate(post_treat = ifelse(year == 1999, 1, 0),
+         treatment = ifelse(treatment == 1, 1, 0),
+         time_x_treated = (post_treat * treatment)) %>% 
+  group_by(post_treat, treatment, time_x_treated) %>% 
+  summarise(vani = mean(vani))
+
+## Run the OLS regression w/dummies
+model_did <- lm(vani ~ treatment + post_treat + time_x_treated, 
+                data = progresa_ols)
+
+## Report OLS Model results Print the summary of the OLS model
+summary(model_did)
+
+# create table
+ols_did_table <- kable(summary(model_did)$coefficients, format = "latex", caption = "DID with OLS (group means)") %>%
+  kable_styling(font_size = 7, latex_options = "hold_position")
+
+ols_did_table
+```
+
+* **The DID using OLS with group means is $287.90. This means that using the OLS method, the value of animal holdings after treatment in treated households is, on average, $287.90 higher than untreated households. The treatment group coefficient shows us that before treatment, the treatment group's value of animal holdings was an average of $237.70 lower than the untreated group. The time dummy coefficient shows us that the value of animal holdings among the untreated group decreased by an average of $1156.80 over the treatment time period.**
+
+# Extra Credit: ATE with OLS using full dataset _(3 pts: 2 pts estimate, 1 pt interpretation)_
+(c) Estimate the ATE with an OLS-regression based on the original units as observations (i.e. not with group mean values, you will need to use the entire dataset). Even though the specification is the same as in the regression with the group mean values above, you’ll need to create new indicator variables for the treatment group and the post treatment time period as well as their interaction term. Verify that you get the same result as above. Now report also on the precision of the estimation and test whether the estimated coefficient is different from zero. 
+
+```{r, include=TRUE}
+## Create the dummy variables (you'll need 3)
+progresa_ols_ec <- progresa_full %>% 
+  mutate(post_treat = ifelse(year == 1999, 1, 0),
+         time_x_treated = (post_treat * treatment))
+
+## OLS regression
+model_did_ec <- lm(vani ~ treatment + post_treat + time_x_treated, 
+                   data = progresa_ols_ec)
+
+# summary
+summary(model_did_ec)
+
+# Present Regressions in Table
+ols_did_table_ec <- kable(summary(model_did_ec)$coefficients, format = "latex", caption = "DID with OLS") %>%
+  kable_styling(font_size = 7, latex_options = "hold_position")
+
+ols_did_table_ec
+```
+
+* **Using OLS with the complete dataset results in the same values as using the group means in the previous question. The DID is still 287.90, and the coefficients are also the same (just rounded slightly differently). The DID estimate has a p-value of 0.01140 and is statistically significant at a significance level of alpha = 0.05. This means that the DID estimate is significantly different than 0.**
+
+
+
+
+
+
+
+
+
+
+
+

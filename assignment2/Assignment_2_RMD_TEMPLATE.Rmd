@@ -1,0 +1,387 @@
+---
+title: "EDS241: Assignment 2 Template"
+author: "Hope Hahn"
+date: '`r format(Sys.time(), "%m/%d/%Y")`'
+output: 
+  pdf_document:
+    toc: false
+    number_sections: yes
+header-includes:
+  \setlength{\parindent}{1em}
+  \usepackage{float}
+  \renewcommand{\thesubsection}{Question (\alph{subsection})}
+--- 
+
+**Reminders:** Make sure to read through the setup in markdown. Remember to fully report/interpret your results and estimates (in writing) + present them in tables/plots.
+``` {r setup, echo = FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+
+#Clean Environment
+rm(list=ls())
+
+# set default chunk options
+knitr::opts_chunk$set(fig.width = 4, fig.height = 3, 
+                      echo = TRUE, message = FALSE, warning = FALSE)
+
+# load packages
+packages=c(
+  # Necessary for Assignment 2
+  "Match","plm", "tidyverse", "MatchIt", "RItools", "Hmisc", "lmtest", "estimatr",
+  # You decide what works for you, these are the packages I use to display results ect, they may not be the ones you use.
+  
+  "gridExtra", "stargazer", "kableExtra",
+  "purrr", "knitr", "broom",
+  
+  # Some Potentially useful packages from earlier examples
+  "stargazer", "here", "tidyr", "dplyr","stringr", "janitor", 
+  "cowplot", "ggplot2", "tinytex", "datasets", "tibble") # Used for Mock assignment
+
+for (i in packages) {
+  if (require(i,character.only=TRUE)==FALSE) {
+    install.packages(i,repos='http://cran.us.r-project.org')
+  }
+  else {
+    require(i,character.only=TRUE)
+  }
+}
+
+# Disable scientific notation if you want
+options(scipen=999)
+```
+
+# Part 1 Treatment Ignorability Assumption and Applying Matching Estimators (19 points):
+The goal is to estimate the causal effect of maternal smoking during pregnancy on infant birth weight using the treatment ignorability assumptions. The data are taken from the National Natality Detail Files, and the extract “SMOKING_EDS241.csv”' is a random sample of all births in Pennsylvania during 1989-1991. Each observation is a mother-infant pair. The key variables are:
+
+**The outcome and treatment variables are:**
+
+\indent birthwgt=birth weight of infant in grams
+
+\indent tobacco=indicator for maternal smoking
+
+**The control variables are:**
+
+\indent mage (mother's age), meduc (mother's education), mblack (=1 if mother identifies as Black), alcohol (=1 if consumed alcohol during pregnancy), first (=1 if first child), diabete (=1 if mother diabetic), anemia (=1 if mother anemic)
+
+```{r , include=TRUE}
+# Load data for Part 1
+smoking_data <- read_csv(here::here("assignment2", "data", "SMOKING_EDS241.csv"))
+```
+
+## Mean Differences, Assumptions, and Covariates _(3 pts)_
+a) What is the mean difference in birth weight of infants with smoking and non-smoking mothers [1 pts]?  Under what assumption does this correspond to the average treatment effect of maternal smoking during pregnancy on infant birth weight [0.5 pts]? Calculate and create a table demonstrating the differences in the mean proportions/values of covariates observed in smokers and non-smokers (remember to report whether differences are statistically significant) and discuss whether this provides empirical evidence for or against this assumption. Remember that this is observational data. What other quantitative empirical evidence or test could help you assess the former assumption? [1.5 pts: 0.5 pts table, 1 pts discussion]
+
+```{r , include=TRUE}
+## Calculate mean difference. Remember to calculate a measure of statistical significance
+# subset non smokers
+non_smoking <- smoking_data %>% 
+  filter(tobacco == 0)
+# susbset smokers
+yes_smoking <- smoking_data %>% 
+  filter(tobacco == 1)
+
+# calculate the difference in means between this group
+mean_difference <- round((mean(non_smoking$birthwgt) - mean(yes_smoking$birthwgt)), 2)
+```
+
+* **The mean difference in birth weight of infants between smoking and non-smoking mothers is `r mean_difference`. This corresponds to the average treatment effect under the ignorability assumption, assuming there is an equal distribution/mean of covariates among smoking and non smoking mothers, and covariates are not influencing treatment effects.**
+
+```{r}
+## Covariate Calculations and Tables (feel free to use code from Assignment 1 key)
+
+# Selecting binary and continuous variables from the dataset
+binary_vars <-  smoking_data %>%
+  select(mblack, alcohol, first, diabete, anemia, tobacco)
+
+continuous_vars<- smoking_data %>% 
+  select(mage, meduc, birthwgt, tobacco)
+
+# Initialize empty data frames to store results of tests
+prop_test_results <- data.frame()
+t_test_results <- data.frame()
+
+# prop tests --------------------------------------------------------------------
+binary_names <- names(binary_vars)
+for (var in binary_names) {
+  
+  # Splitting the data into smoking and nonsmoking groups for the current variable
+  smoking_binary <- binary_vars %>% 
+    filter(tobacco == 1) %>% 
+    pull(!!sym(var))
+  
+  nonsmoking_binary <- binary_vars %>% 
+    filter(tobacco == 0) %>% 
+    pull(!!sym(var))
+  
+  # Performing the proportion test
+  prop_test_result <- prop.test(x = c(sum(smoking_binary), sum(nonsmoking_binary)),
+                                n = c(length(smoking_binary), length(nonsmoking_binary)),
+                                correct = FALSE)
+  
+  # Storing the tidy results of the proportion test in the data frame
+  prop_test_result_tidy <- broom::tidy(prop_test_result)
+  prop_test_result_tidy$Variable <- var
+  prop_test_results <- rbind(prop_test_results, prop_test_result_tidy)
+  
+} 
+
+# t-tests -----------------------------------------------------------------------
+continuous_names <- names(continuous_vars)[1:3]
+for (var in continuous_names) {
+  
+  formula <- as.formula(paste(var, "~ tobacco"))
+  
+  # t-test
+  t_test_result <- t.test(formula, data = continuous_vars)
+  
+  # store tidy results of t-test in data frame
+  t_test_result_tidy <- broom::tidy(t_test_result)
+  t_test_result_tidy$Variable <- var
+  t_test_results <- rbind(t_test_results, t_test_result_tidy)
+  
+}
+
+# Combining the results of proportion and t-tests into a single data frame ------
+combined_results <- bind_rows(
+  prop_test_results %>% select(Variable, estimate1, estimate2, p.value),
+  t_test_results %>% select(Variable, estimate1, estimate2, p.value)
+)
+
+# Creating a table for output using kable and kableExtra
+combined_results_table <- kable(combined_results, format = "latex",
+                                col.names = c("Variable",
+                                              "Proportion or Mean Non-smoking",
+                                              "Proportion or Mean Smoking", 
+                                              "P-Value"),
+                                caption = "Smoking and Non-smoking Proportion and T- Test Results Summary") %>% 
+  kable_styling(font_size = 7, latex_options = "hold_position")
+
+# Displaying the table
+combined_results_table
+```
+
+* **Differences in covariates between smoking and non-smoking mothers are statistically significant for all covariates except for diabetes (using a significance level of alpha = 0.05). All covariates have p-values of approximately 0 while diabetes has a p-value of approximately 0.886. Because most of the covariates are statistically significant, this provides empirical evidence against our assumption, and we would reject the null hypothesis that there is no difference in distribution/means between covariates in smoking and non-smoking mothers, meaning that there are differences in baseline characteristics between the two groups. To test the differences in distributions of covariates among the two groups, we could also calculate propensity scores and use histograms to visualize the differences in distribution.**
+
+## ATE and Covariate Balance _(3 pts)_
+b) Assume that maternal smoking is randomly assigned conditional on the observable covariates listed above. Estimate the effect of maternal smoking on birth weight using an OLS regression with NO linear controls for the covariates [0.5 pts]. Perform the same estimate including the control variables [0.5 pts]. Next, compute indices of covariate imbalance between the treated and non-treated regarding these covariates (see example file from class). Present your results in a table [1 pts]. What do you find and what does it say regarding whether the assumption you mentioned responding to a) is fulfilled? [1 pts]
+
+```{r , include=TRUE, results = 'asis'}
+# ATE Regression univariate
+# Regression of birthweight on tobacco
+model_uni <- lm(birthwgt ~ tobacco, data = smoking_data)
+
+# ATE with covariates
+model_cov <- lm(birthwgt ~ tobacco + mage + meduc + first + mblack + alcohol + diabete + anemia, data = smoking_data)
+
+# Present Regression Results
+se_models = starprep(model_uni, model_cov, stat = c("std.error"), se_type = "HC2", alpha = 0.05)
+
+stargazer(model_uni, model_cov, se = se_models,
+          type = "latex", ci=FALSE, no.space = TRUE,
+          header = FALSE, omit = c("Constant"), omit.stat = c("adj.rsq","ser", "f"),
+          covariate.labels = c(""),
+          dep.var.labels = c("Birthwgt"), dep.var.caption = c(""),
+          title = "Average Treatment Effect", table.placement = "H",
+          notes = "Robust standard errors in parantheses", notes.align = "l")
+```
+
+* **The regression results show that the ATE with no linear controls is -244.54 and is statistically significant. This means that we reject the null hypothesis that there is no mean difference in birthweight between smoking and non-smoking mothers, and on average, smoking mother's birthweight is -244.54 grams lower than non-smoking mothers. The ATE with controls added is -228.07, and is also statistically significant. Using this ATE, we also reject the null hypothesis that there is no mean difference in birthweight between smoking and non-smoking mothers, and on average, non-smoking mother's birthweight is -228.07 grams lower than non-smoking mothers. The ATE calculated using controls and without controls are different, which means that the baseline characteristics are different between the treatment groups and are influencing the effects of treatment.**
+
+```{r}
+# Covariate balance
+cov_balance <- xBalance(tobacco ~ mage + meduc + first + mblack + alcohol + diabete + anemia,	data = smoking_data,
+                        report=c("std.diffs","chisquare.test", "p.values"))
+
+# Balance Table 
+balance_table <- kable(cov_balance, format = "latex",
+                       caption = "Covariate Imbalance before matching") %>% 
+  kable_styling(font_size = 7, latex_options = "hold_position")
+
+# Displaying the table
+balance_table
+```
+
+* **These results show that there are imbalances among the covariates between the smoking and non-smoking groups, this means that the ignorability assumption is not met, and there is not an equal distribution/means in covariates and baseline characteristics between the two 'treatment' (smoking/non-smoking) groups. The chi squared value tells us to reject the null hypothesis that there are no differences in baseline characteristics between the two groups, as well as the p-values for all covariates except for diabetes.** 
+
+## Propensity Score Estimation _(3 pts)_
+c) Next, estimate propensity scores (i.e. probability of being treated) for the sample, using the provided covariates. Create a regression table reporting the results of the regression and discuss what the covariate coefficients indicate and interpret one coefficient [1.5 pts]. Create histograms of the propensity scores comparing the distributions of propensity scores for smokers ('treated') and non-smokers ('control'), discuss the overlap and what it means [1.5 pts].
+
+```{r , include=TRUE}
+## Propensity Scores
+ps	<- glm(tobacco ~ mage + meduc + first + mblack + alcohol + diabete + anemia,
+          data	= smoking_data,	family	= binomial())
+
+#use gtsummary to make table
+library(gtsummary)
+#print the table in a nice format  
+ps %>%
+  tbl_regression() 
+```
+
+* **The covariate coefficients indicate the probability/odds that an individual will be a part of a specific 'treatment' group based off of baseline characteristics. For example, the coefficient for meduc is is -0.30, this means that with a 1 unit increase in mother education level, the log(odds) of the mother being a smoker decreases by 0.30.**
+
+```{r}
+## PS Histogram Unmatched 
+smoking_data$psvalue	<- predict(ps, type	= "response")
+
+histbackback(split(smoking_data$psvalue,	smoking_data$tobacco),	main= 
+               "Propensity score before matching",	xlab=c("non-smoking",	"smoking"))
+```
+
+* **There is partial overlap in the histograms between the non-smoking and smoking groups. This means that the range of distributions within the smoking group is only part of the non-smoking group, and there is an imbalance among the different groups (they are not evenly matched). The control group does not contain good counterfactuals for the treated group.**
+
+## Matching Balance _(3 pts)_
+(d) Next, match treated/control mothers using your estimated propensity scores and nearest neighbor matching. Compare the balancing of pretreatment characteristics (covariates) between treated and non-treated units in the original dataset (from c) with the matched dataset (think about comparing histograms/regressions) [2 pts]. Make sure to report and discuss the balance statistics [1 pts].
+
+```{r , include=TRUE}
+## Nearest-neighbor Matching
+m.nn <- matchit(tobacco ~ mage + meduc + first + mblack + alcohol + diabete + anemia,
+                data	= smoking_data,	method= "nearest",	ratio	= 1)
+match.data = match.data(m.nn)
+
+## Covariate Imbalance post matching: 
+matching_balance <- xBalance(tobacco ~ mage + meduc + first + mblack + alcohol + diabete + anemia,	data = match.data,
+                             report=c("std.diffs","chisquare.test", "p.values"))
+
+# Balance Table 
+matching_balance_table <- kable(matching_balance, format = "latex",
+                                caption = "Covariate Imbalance after matching") %>% 
+  kable_styling(font_size = 7, latex_options = "hold_position")
+
+# Displaying the table
+matching_balance_table
+
+## Histogram of PS after matching
+histbackback(split(match.data$psvalue,	match.data$tobacco),	main= "Propensity score after matching", xlab=c("non-smoking",	"smoking"))
+```
+
+* **Compared to the previous propensity score histogram before matching, there is a higher overlap and the distributions are much more balanced after matching. Matching allowed the counterfactuals to match the treatment group to eliminate the effects of covariates on the estimated treatment effects. The chi square value and p-scores of most variables (all but meduc and alcohol) show that the differences between baseline characteristics are not statistically significant.**
+
+## ATE with Nearest Neighbor _(3 pts)_
+(e) Estimate the ATT using the matched dataset. Report and interpret your result (Note: no standard error or significance test is required here)
+
+```{r , include=TRUE}
+## Nearest Neighbor 
+# alternative in tidyverse
+sumdiff_data<-match.data%>%
+  group_by(subclass)%>%
+  mutate(diff=birthwgt[tobacco==1]-birthwgt[tobacco==0])
+
+sumdiff<-sum(sumdiff_data$diff)/2
+
+## ATT
+NT <- sum(smoking_data$tobacco)
+ATT_m_nn = 1/NT * sumdiff
+ATT_m_nn
+
+att_match_table <- kable(ATT_m_nn, format = "latex",
+                         caption = "ATT after matching") %>% 
+  kable_styling(font_size = 7, latex_options = "hold_position")
+```
+
+* **The ATT using the matching dataset is `r ATT_m_nn`. This means that the average effect of treatment among the treated group is `r ATT_m_nn`, so smoking mothers birthweight is, on average, `r ATT_m_nn` grams lower than the non-treated. This estimate is the ATT and not ATE because when we used nearest neighbors matching, we matched for the smoking (treated) group, and we did not perform matching for the non-treated group (non-smoking).**
+
+## ATE with WLS Matching _(3 pts)_
+f) Last, use the original dataset and perform the weighted least squares estimation of the ATE using the propensity scores (including controls). Report and interpret your results, here include both size and precision of estimate in reporting and interpretation.
+
+```{r , include=TRUE, results = 'asis'}
+## Weighted least Squares (WLS) estimator Preparation
+PS <- smoking_data$psvalue
+Y <- smoking_data$birthwgt
+D <- smoking_data$tobacco
+
+smoking_data$wgt = (D/PS + (1-D)/(1-PS))
+
+## Weighted least Squares (WLS) Estimates
+reg_wls_c	<- lm(birthwgt ~ tobacco + mage + meduc + first + mblack + alcohol + diabete + anemia, data	= smoking_data, weights = wgt)
+
+
+## Present Results
+# Present Regression Results
+wls_table <- kable(summary(reg_wls_c)$coefficients, format = "latex",
+                   caption = "ATE with WLS matching") %>% 
+  kable_styling(font_size = 7, latex_options = "hold_position")
+
+wls_table
+```
+
+* **The WLS estimate of ATE is -224.854. This estimate tells us that the average birthweight is -224.854 grams less among smoking mothers than non-smoking mothers. The standard error is approximately 3, which is low, meaning that this estimate is relatively precise.**
+
+## Differences in Estimates _(1 pts)_ 
+g) Explain why it was to be expected given your analysis above that there is a difference between your estimates in e) and f)? 
+
+* **In e, we calculated ATT which was the average treatment effect among the treated group because we calculated counterfactuals based on the characteristics of the treatment group. However, in f, we calculated the average treatment effect among the whole population with WLS, which runs the regression while controlling for covariates. Because of this, the average treatment effects were calculated using different methods, and the resulting effects are different**
+
+
+\newpage
+
+# Part 2 Panel model and fixed effects (6 points)
+\indent We will use the  progresa data from last time as well as a new dataset. In the original dataset, treatment households had been receiving the transfer for a year. Now, you get an additional dataset with information on the same households from before the program was implemented, establishing a baseline study (from 1997), and the same data we worked with last time (from 1999).
+\indent *Note: You will need to install the packages plm and dplyr (included in template preamble). Again, you can find a description of the variables at the bottom of PDF and HERE.
+
+## Estimating Effect with First Difference _(3 pts: 1.5 pts estimate, 1.5 pts interpretation)_
+Setup: Load the new baseline data (progresa_pre_1997.csv) and the follow-up data (progresa_post_1999.csv) into R. Note that we created a time denoting variable (with the same name, 'year') in BOTH datasets. Then, create a panel dataset by appending the data (i.e. binding the dataset row-wise together creating a single dataset). We want to examine the same outcome variable as before, value of animal holdings (vani).
+
+```{r , include=TRUE}
+rm(list=ls()) # clean environment
+
+## Load the datasets
+progresa_pre_1997 <- read_csv(here::here("assignment2", "data", "progresa_pre_1997.csv")) 
+progresa_post_1999 <- read_csv(here::here("assignment2", "data", "progresa_post_1999.csv"))
+
+## Append post to pre dataset 
+progresa <- rbind(progresa_pre_1997, progresa_post_1999) 
+```
+
+a) Estimate a first-difference (FD) regression manually, interpret the results briefly (size of coefficient and precision!)
+\indent *Note: Calculate the difference between pre- and post- program outcomes for each family. To do that, follow these steps and the code given in the R-template:
+
+```{r, include=TRUE}
+### Code included to help get you started
+## i. Sort the panel data in the order in which you want to take differences, i.e. by household and time.
+
+## Create first differences of variables
+progresa <- progresa %>% 
+  arrange(hhid, year) %>% 
+  group_by(hhid) %>% 
+  
+  ## ii. Calculate the first difference using the lag function from the dplyr package.
+  mutate(vani_fd = vani - dplyr::lag(vani))
+
+## iii. Estimate manual first-difference regression (Estimate the regression using the newly created variables.)
+fd_manual <- lm(vani_fd ~ treatment, data = progresa)
+
+# make table
+fd_table <- kable(summary(fd_manual)$coefficients, format = "latex",
+                  caption = "Manual first difference") %>% 
+  kable_styling(font_size = 7, latex_options = "hold_position")
+
+fd_table
+```
+
+* **The manual first different calculation results show that a post treatment, the value of animal holdings of a household is 287.9 higher than the pre treatment, on average. However, the standard error is 85.6, which means that these results are not incredibly precise.** 
+
+## Fixed Effects Estimates _(2 pts: 1 pts estimate, 1.5 interpretation)_
+b) Now also run a fixed effects (FE or ‘within’) regression and compare the results. Interpret the estimated treatment effects briefly (size of coefficient and precision!)
+
+```{r, include=TRUE}
+## Fixed Effects Regression
+within1 <- plm(vani ~ treatment, index = c("state", "year"), model = "within", effect = "twoways", data = progresa)
+
+## Present Regression Results
+# Calculate standard errors (note slightly different procedure with plm package)
+se_within1 <- coeftest(within1, vcov = vcovHC(within1, type = "HC2", method="white1"))[, "Std. Error"]
+# Reformat standard errors for stargazer()
+se_within1 <- list(se_within1)
+# Output results with stargazer
+stargazer(within1, keep=c("treatment"), se = se_within1, type="text")
+
+```
+
+* **With the fixed effects estimate, the value of animal holdings of a household is 231.844 lower when treated versus untreated. The standard error for this estimate is 56.66, meaning that this estimation is slightly more precise than the FD estimation, but is still not very precise. The differences between the FD and FE estimation are drastically different as the FE estimator estimates a decrease in value with treatment while the FD estimator estimates an increase.
+**
+
+## First Difference and Fixed Effects and Omitted Variable Problems _(1 pts)_
+c) Explain briefly how the FD and FE estimator solves a specific omitted variable problem? Look at the example on beer tax and traffic fatalities from class to start thinking about omitted variables. Give an example of a potential omitted variable for the example we are working with here that might confound our results? For that omitted variable, is a FE or FD estimator better? One example is enough.
+
+* **The FD estimator solves a specific omitted variable problem because if an omitted variable does not change over time, then any changes in Y over time cannot be caused by the omitted variable. The FE estimator holds the parameters constant to account for omitted variables. An example of a potential omitted variable for this example could be quality or size of homes/land in certain areas (maybe larger houses/land can accommodate more animals.) In this case FD would be better because these variables would differ per area, but would be constant over time.**
